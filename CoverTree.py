@@ -1,8 +1,9 @@
 import numpy as np
+import math
 from scipy.spatial import distance
 
 class CoverTree:
-    def __init__(self, data, b=2.0, Adist = None):
+    def __init__(self, data, b=2.0, adist = 0,max_attrib=1):
         """
         Initializes the Cover Tree with hierarchical levels based on distances.
         Args:
@@ -11,66 +12,83 @@ class CoverTree:
         """
         self.data = np.array(data)
         self.b = b
-        self.Adist =Adist
-        self.layers = self._build_tree()
-        self.parent_child_map = {}  # Explicit parent-child mapping
-
+        self.adist =adist
+        self.layers = self.build_tree(max_attrib)
         if not self.layers:
             print("⚠️ Warning: CoverTree built with empty layers!")
         else:
-            print(f"✅ CoverTree built with {len(self.layers)} levels")
+            print(f" CoverTree built with {len(self.layers)} levels")
 
-    def _build_tree(self):
+    def build_tree(self,max_attrib):
         """
         Build hierarchical layers for the Cover Tree with proper nesting and parent-child relationships.
         Returns:
             dict: Nested levels from l=0 down to l_min.
         """
         if len(self.data) == 0:
-            return {}, {}
+            return {}
 
-        centroid = np.mean(self.data[:, self.Adist], axis=0)
-
+        centroid = np.mean(self.data[:, self.adist], axis=0)
+        temp_centroid=[]
+        for i in range(0,max_attrib):
+            if i!=self.adist:
+                temp_centroid.append(0)
+            else:
+                temp_centroid.append(centroid)
+        centroid=np.array(temp_centroid)
         # Compute min distance to determine l_min
-
-        min_dist = min(
-            distance.euclidean(self.data[i, self.Adist].flatten(), self.data[j, self.Adist].flatten())
+        max_dist=distance.euclidean(self.data[len(self.data)-1,self.adist].flatten(),self.data[0,self.adist].flatten()) if len(self.data) > 1 else 1.0
+        """ max_dist = max(
+            distance.euclidean(self.data[i, self.adist].flatten(), self.data[j, self.adist].flatten())
             for i in range(len(self.data)) for j in range(i + 1, len(self.data))
-        ) if len(self.data) > 1 else 1.0
+        ) if len(self.data) > 1 else 1.0"""
+        if(max_dist==0):
+            layers={}
+            layers[0]=self.data
+            return layers
         # Compute l_max and l_min
-        l_min = int(np.floor(np.log(min_dist) / np.log(self.b)))
+        l_max = int(math.ceil(math.log(max_dist,self.b)))
         # Initialize levels
-        layers = {l: [] for l in range(0, -(l_min - 1), -1)}  # יורד מ-l_max ל-l_min
-        self.parent_child_map = {}
-
-        distances = np.array([distance.euclidean(row[self.Adist].flatten(), centroid.flatten()) for row in self.data])
-        sorted_indices = np.argsort(distances)
-        sorted_data = self.data[sorted_indices]
-        max_distance_idx = np.argmax(distances)
+        layers = {l: [] for l in range(0, -(l_max)-2, -1)}  # יורד מ-l_max ל-l_min
         layers[0] = [centroid]
-        current_layer = sorted_data  # המתחילים הם רק האלמנט הזה
-
+        current_layer=layers[0]
         # Build hierarchical layers (top-down)
-        for l in range(0, -(l_min - 1), -1):  # יורדים ברמות
-            threshold = self.b ** l
-            new_layer = []
-
-            for row in layers[l]:
-                added = False
-                for child in current_layer:
-                    print(child)
-                    print(distance.euclidean(row.flatten(), child.flatten()))
-                    if distance.euclidean(row[self.Adist].flatten(), child[self.Adist].flatten()) <= threshold:
-                        self.parent_child_map.setdefault(tuple(child), []).append(tuple(row))  # קשר הורה-ילד
-                        new_layer.append(row)
-                        is_added = True
+        for l in range(-1, -(l_max)-1, -1):  # יורדים ברמות
+            if(l==-1):
+                    threshold = self.b ** (l_max+l-1)
+            else:
+                 threshold = self.b ** (l_max+l)
+            new_layer=[]
+            for item in current_layer:
+                new_layer.append(item)
+            for i in range(math.ceil(len(self.data)/2)):
+                last=self.data[len(self.data)-i-1]
+                first=self.data[i]
+                is_larger_beginning=True
+                for item in new_layer:
+                    if distance.euclidean(item[self.adist].flatten(),first[self.adist].flatten())<threshold:
+                        is_larger_beginning=False
                         break
-
-
-                layers[l] = new_layer
-                current_layer = new_layer  # ממשיכים לרמה הבאה
-
+                is_larger_end=True
+                for item in new_layer:
+                    if distance.euclidean(item[self.adist].flatten(),last[self.adist].flatten())<threshold:
+                        is_larger_end=False
+                        break
+                new_layer.append(first) if is_larger_beginning else None        
+                new_layer.append(last) if is_larger_end else None 
+            if l==-1:
+                new_layer.remove(centroid)
+            new_data = [list(y) for y in set([tuple(x) for x in new_layer])]
+            layers[l] = new_data
+            current_layer = layers[l]
+            if(len(current_layer)==len(self.data)):
+                for j in range(l, -(l_max)-2, -1):
+                    layers[j]=current_layer
+                break
+        layers[-(l_max)-1]=self.data
         return layers
+
+        
 
     def extract_candidates(self, k, delta):
         """
@@ -108,13 +126,12 @@ class CoverTree:
         # מציאת מועמדים מהשכבות שמתחת לרמת k-level
         seen = set()
         candidates = []
-
-        for l in range(k_level, max(k_level - delta - 1, min(self.layers.keys()) - 1), -1):
-            for point in self.layers[l]:
-                point_tuple = tuple(point)
-                if point_tuple not in seen:
-                    seen.add(point_tuple)
-                    candidates.append(point)
+        l=max(k_level - delta, min(self.layers.keys()))
+        for point in self.layers[l]:
+            point_tuple = tuple(point)
+            if point_tuple not in seen:
+                seen.add(point_tuple)
+                candidates.append(point)
 
         print(f" Found {len(candidates)} candidates from CoverTree")
         return np.array(candidates)
